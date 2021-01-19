@@ -4,21 +4,23 @@ import discord
 import asyncio
 import datetime as dt
 import requests                     # for registering/edititng/deleting commands with discord
-import pytz                         # for timezone name detection and daylight savings time detection
+import pytz
+import zlib                         # for timezone name detection and daylight savings time detection
+import json
 from dotenv import load_dotenv      # for loading environmental variables (single file)
 from dotenv import dotenv_values    # for loading from multiple .env files
-
+import aiohttp                      # websocket client and rest requests
 
 # load application environment variables
-bot_env = 'ignitebeta_bot.env'
-app_env = 'ignitebeta_app.env'
+bot_env = '../ignitebeta_bot.env'
+app_env = '../ignitebeta_app.env'
 
-config = {
-    **dotenv_values(bot_env),  # load bot variables and token
-    **dotenv_values(app_env) # load app variables and token
-    }
+# config = {
+#     **dotenv_values(bot_env),  # load bot variables and token
+#     **dotenv_values(app_env) # load app variables and token
+#     }
 
-load_dotenv(config)
+load_dotenv(app_env)
 
 # grab auth token
 bot_token_field = 'BOT_TOKEN'
@@ -29,7 +31,7 @@ client_token_field = 'CLIENT_TOKEN'
 #########
 
 client_auth_token = os.getenv(client_token_field)
-bot_auth_token = s.getenv(bot_token_field)
+bot_auth_token = os.getenv(bot_token_field)
 
 ######################################
 ####### SLASH COMMANDS SECTION #######
@@ -54,7 +56,7 @@ bot_auth_token = s.getenv(bot_token_field)
 guild_id = '307062314484629506'
 application_id = '798030290865750046'
 base_url = 'https://discord.com/api/v8/'
-requests_auth_headers = {"Authorization": "Bearer "+ client_auth_token}
+requests_auth_headers = {"Authorization": "Bearer "+ str(client_auth_token)}
 bad_upload_command_str_code = 'not_uploaded_correctly'
 
 def upload_all_commands(all_commands_dict):
@@ -195,17 +197,165 @@ new_command_json = {
 # we could also do this manually, which much more granular control over process
 # however elected for discord library for simplicity for now.
 
-intents = discord.Intents.default()
-intents.members=True
-intents.presences = True
-app_client = discord.Client(intents = intents)
-
-@client.event
-async def interaction_create():
+# intents = discord.Intents.default()
+# intents.members=True
+# intents.presences = True
+# app_client = discord.Client(intents = intents)
 
 
+class Gateway:
 
-#app_client.run(bot_auth_token)
+    DISCORD_GATEWAY = 'wss://gateway.discord.gg/?v=6&encoding=json'
+    # gateway op code documentation: https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-opcodes
+    # set global op codes.          # client Action         # Description
+    
+    OP_DISPATCH           = 0       # Receive               # An event was dispatched.
+    OP_HEARTBEAT          = 1       # Send/receive          # Fired periodically by the client to keep the connection alive.
+    OP_IDENTIFY           = 2       # Send                  # Starts a new session during the initial handshake.
+    OP_PRESENCE           = 3       # Send                  # Update the client's presence.
+    OP_VOICE_STATE        = 4       # Send                  # Used to join/leave or move between voice channels.
+    OP_VOICE_PING         = 5       # Send                  
+    OP_RESUME             = 6       # Send                  # Resume a previous session that was disconnected
+    OP_RECONNECT          = 7       # Send                  # You should attempt to reconnect and resume immediately.
+    OP_REQUEST_MEMBERS    = 8       # Send                  # Request information about offline guild members in a large guild. 
+    OP_INVALIDATE_SESSION = 9       # Send                  # The session has been invalidated. You should reconnect and identify/resume accordingly.
+    OP_HELLO              = 10      # Send                  # Sent immediately after connecting, contains the heartbeat_interval to use.
+    OP_HEARTBEAT_ACK      = 11      # Send                  # Sent in response to receiving a heartbeat to acknowledge that it has been received.
+    OP_GUILD_SYNC         = 12      # Send
+
+    def __init__(self, token: str):
+        self.token = token
+        self.sesh = aiohttp.ClientSession()
+        self.hb_interval = None
+        self.connected = False
+        self._session_id = None
+
+        # create event loop (starts paused)
+        self.loop = asyncio.get_event_loop()
+
+        #handling decompression
+        self._zlib_suffix = b'\x00\x00\xff\xff'
+        self._buffer = bytearray()
+        self._inflator = zlib.decompressobj()
+
+    async def main(self):
+        async with self.sesh.ws_connect(Gateway.DISCORD_GATEWAY) as ws:
+            async for res in ws:
+            
+                res = res.data
+
+                print(type(res))
+                if type(res) is bytes:
+                    m = await self.depack(res)
+
+                if type(res) is str:
+                    m = json.loads(res)
+                
+                print(m)
+
+                
+                # Listen for Operation codes
+
+                # Assuming m is already defined
+                # m will be the dict
+                
+                op = m['op']
+                
+                if op != 0:
+                    if op == Gateway.OP_HELLO:
+                        self.hb_interval = m['d']['heartbeat_interval']
+                        continue
+
+                    if op == Gateway.HEARTBEAT_ACK:
+                        pass
+
+                    if  op == Gateway.HEARTBEAT:
+                        pass
+
+                    if op == Gateway.OP_INVALIDATE_SESSION:
+                        pass
+
+                # Listen for Events
+
+                event = m.get('t')
+
+                if event == 'READY':
+                    self.sequence = res['s']
+                    self.session_id = res['d']['session_id']
+                    
+            
+                if event is None:
+                    print('No event!')
+                
+    async def heartbeat(self):
+        pass
+
+    async def send(self, op: int, d: int or dict, s: int = None, t: str = None):
+        # Payloads: https://discord.com/developers/docs/topics/gateway#payloads
+        #
+        # Gateway Payload Structure
+        #
+        # Field	Type	Description
+        # +----------------------------------------------------------------------+
+        # op	       integer	opcode for the payload
+        # d	?mixed      (any JSON value)	event data
+        # s	?integer *	sequence number, used for resuming sessions and heartbeats
+        # t	?string *   the event name for this payload
+        # * s and t are null when op is not 0 (Gateway Dispatch Opcode).
+    
+        # Example Gateway Dispatch
+            # {
+            #   "op": 0,
+            #   "d": {},
+            #   "s": 42,
+            #   "t": "GATEWAY_EVENT_NAME"
+            # }
+        payload = {
+            "op": op,
+            "d": d
+        }
+
+        if s:
+            payload['s'] = s
+        if t:
+            payload['t'] = t
+
+    async def depack(self, res):
+        self._buffer.extend(res)
+
+        if len(res) < 4 or res[-4] != self._zlib_suffix:
+            return
+
+        dres = self._inflator.decompress(self._buffer)
+        self._buffer = bytearray()
+
+        return dres
+
+    def run(self):
+        # initializes event loop
+        try:
+            self.loop.run_until_complete(self.main())
+        finally:
+            self.loop.close()
+
+
+if __name__ == '__main__':
+    gatewayClient = Gateway(client_auth_token)
+    gatewayClient.run()
+        
+
+
+
+# on receive hearbeat hello
+
+# start heartbeating
+    # every heatbeat interval
+    # send heartbeat
+    # receive ACK
+    # stay alive
+
+    # on receive hearbeat request
+    # send heartbeat
 
 
 
@@ -221,6 +371,8 @@ async def interaction_create():
 # NB to allow bot to look at members, we have to specify that intent 
 # it first has to be enabled on developer portal (done)
 # same for reactions aparently (intent only, dont think it needs dev portal permission)
+
+# consider using discord.py
 intents = discord.Intents.default()
 intents.members=True
 intents.reactions = True

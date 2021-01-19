@@ -19,14 +19,14 @@ from dotenv import load_dotenv
 
 # https://discord.com/api/oauth2/authorize?response_type=code&client_id=157730590492196864&scope=identify%20guilds.join&state=15773059ghq9183habn&redirect_uri=https%3A%2F%2Fnicememe.website&prompt=consent
 
-load_dotenv('ignitebeta_app.env')
+load_dotenv('../ignitebeta_app.env')
 
 
 client_app_id = os.getenv('CLIENT_ID')
 client_app_secret = os.getenv('CLIENT_SECRET')
 client_app_public = os.getenv('CLIENT_PUBLIC')
 client_app_redirect_uri = os.getenv('REDIRECT_URI')
-client_app_token = os.getenv('CLIENT_TOKEN')
+client_auth_token = None
 
 API_ENDPOINT = 'https://discord.com/api/v8'
 CLIENT_ID = client_app_id
