@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import time
 import discord
 import asyncio
 import datetime as dt
@@ -10,6 +11,15 @@ import json
 from dotenv import load_dotenv      # for loading environmental variables (single file)
 from dotenv import dotenv_values    # for loading from multiple .env files
 import aiohttp                      # websocket client and rest requests
+
+# set thius flag to True to assist with troubleshooting and dev
+# in operation set to false
+troubleshooting_flag = True
+
+# this function enables easier printing of 
+async def if_troubleshooting_print(*argv):
+    if troubleshooting_flag == True:
+        print(" ".join(argv))
 
 # load application environment variables
 bot_env = '../ignitebeta_bot.env'
@@ -193,35 +203,36 @@ new_command_json = {
 ####### DISCORD GATEWAY SETUP SECTION #######
 #############################################
 
-# I believe we can use the discord library to manage connection to the gateway
-# we could also do this manually, which much more granular control over process
-# however elected for discord library for simplicity for now.
-
-# intents = discord.Intents.default()
-# intents.members=True
-# intents.presences = True
-# app_client = discord.Client(intents = intents)
-
+# establish gateway class for connecting to discord gateway via websocket
 
 class Gateway:
-
+    # set gateway, choosing to communicate over JSON, and version 6
     DISCORD_GATEWAY = 'wss://gateway.discord.gg/?v=6&encoding=json'
+
     # gateway op code documentation: https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-opcodes
-    # set global op codes.          # client Action         # Description
+    OP_CODES = {
+        ## 'OP_CODE_NAME'      :   INT_CODE   ## CLIENT ACTION        ## DESCRIPTION
+        'DISPATCH'             :   0,         # Receive               # An event was dispatched.
+        'HEARTBEAT'            :   1,         # Send/receive          # Fired periodically by the client to keep the connection alive.
+        'IDENTIFY'             :   2,         # Send                  # Starts a new session during the initial handshake.
+        'PRESENCE'             :   3,         # Send                  # Update the client's presence.
+        'VOICE_STATE'          :   4,         # Send                  # Used to join/leave or move between voice channels.
+        'VOICE_PING'           :   5,      
+        'RESUME'               :   6,         # Send                  # Resume a previous session that was disconnected
+        'RECONNECT'            :   7,         # Receive               # You should attempt to reconnect and resume immediately.
+        'REQUEST_MEMBERS'      :   8,         # Send                  # Request information about offline guild members in a large guild. 
+        'INVALIDATE_SESSION'   :   9,         # Receive               # The session has been invalidated. You should reconnect and identify/resume accordingly.
+        'HELLO'                :   10,        # Receive               # Sent immediately after connecting, contains the heartbeat_interval to use.
+        'HEARTBEAT_ACK'        :   11,        # Receive               # Sent in response to receiving a heartbeat to acknowledge that it has been received.
+        'GUILD_SYNC'           :   12      
+        }
     
-    OP_DISPATCH           = 0       # Receive               # An event was dispatched.
-    OP_HEARTBEAT          = 1       # Send/receive          # Fired periodically by the client to keep the connection alive.
-    OP_IDENTIFY           = 2       # Send                  # Starts a new session during the initial handshake.
-    OP_PRESENCE           = 3       # Send                  # Update the client's presence.
-    OP_VOICE_STATE        = 4       # Send                  # Used to join/leave or move between voice channels.
-    OP_VOICE_PING         = 5       # Send                  
-    OP_RESUME             = 6       # Send                  # Resume a previous session that was disconnected
-    OP_RECONNECT          = 7       # Send                  # You should attempt to reconnect and resume immediately.
-    OP_REQUEST_MEMBERS    = 8       # Send                  # Request information about offline guild members in a large guild. 
-    OP_INVALIDATE_SESSION = 9       # Send                  # The session has been invalidated. You should reconnect and identify/resume accordingly.
-    OP_HELLO              = 10      # Send                  # Sent immediately after connecting, contains the heartbeat_interval to use.
-    OP_HEARTBEAT_ACK      = 11      # Send                  # Sent in response to receiving a heartbeat to acknowledge that it has been received.
-    OP_GUILD_SYNC         = 12      # Send
+    OP_CODES_by_action = {
+        'send':[1,2,3,4,6,8],
+        'receive':[0,1,7,9,10,11]
+        }
+
+
 
     def __init__(self, token: str):
         self.token = token
@@ -229,87 +240,241 @@ class Gateway:
         self.hb_interval = None
         self.connected = False
         self._session_id = None
+        self.sequence_num = None
+        self.heartbeating = False
+        self.heartbeat_acked = False
+        
 
         # create event loop (starts paused)
         self.loop = asyncio.get_event_loop()
 
-        #handling decompression
+        # setup handling decompression of binary (zlib-compressed payloads)
+        # https://discord.com/developers/docs/topics/gateway#encoding-and-compression
+
         self._zlib_suffix = b'\x00\x00\xff\xff'
         self._buffer = bytearray()
         self._inflator = zlib.decompressobj()
-
+        
     async def main(self):
         async with self.sesh.ws_connect(Gateway.DISCORD_GATEWAY) as ws:
-            async for res in ws:
-            
-                res = res.data
 
-                print(type(res))
-                if type(res) is bytes:
-                    m = await self.depack(res)
-
-                if type(res) is str:
-                    m = json.loads(res)
+            # I think this is a class aiohttp.WsMessage
+            async for ws_message in ws:
                 
-                print(m)
+                # get the data from from the reponse
+                res_payload = ws_message.data
 
+                await if_troubleshooting_print(str(type(res_payload)))
+
+                # if bytes (compressed zlib payload)
+                if type(res_payload) is bytes:
+                    # decrompress and store as msg
+                    msg = await self.depack(response_data = res_payload)
+
+                # if str (json)
+                if type(res_payload) is str:
+                    #load json to dict
+                    # use aiohttp as the function receive_json is a coroutine
+                    msg = ws_message.json()
+
+                await if_troubleshooting_print(str(msg))
+               
+                op = msg['op']
+
+                ### handle the different gateway op codes:
+                # handle gateway op for discord guild event
+                if op == 0:
+
+                    event_name = msg.get('t')
+                    event_hander(event=event_name)
+                    pass
                 
-                # Listen for Operation codes
+                # handle other RECEIVED gateway websocket operations (setup, identify, resume, heartbeats etc)
+                elif op in Gateway.OP_CODES_by_action['receive']:
+                    #initial connection establishment:
+                        # the initial flow on establishing a connections per the docs: https://discord.com/developers/docs/topics/gateway#connecting-to-the-gateway
+                            # receive OPcode = 10 Hello
+                            # extract heartbeat_interval from opcode10 hello msg
+                            # commence sending opcode1 heartbeats every heartbeat_interval milliseconds
+                                # NB: gateway may also request heartbeat, if received should send a heartbeat on request as well.
+                            # client should send opcode 2 Identify
 
-                # Assuming m is already defined
-                # m will be the dict
-                
-                op = m['op']
-                
-                if op != 0:
-                    if op == Gateway.OP_HELLO:
-                        self.hb_interval = m['d']['heartbeat_interval']
-                        continue
+                    if op == Gateway.OP_CODES['HELLO']:
+                        # receive only code
+                        await if_troubleshooting_print('HELLO received')
+                        
+                        self.hb_interval = msg['d']['heartbeat_interval']
 
-                    if op == Gateway.HEARTBEAT_ACK:
-                        pass
+                        await if_troubleshooting_print('heartbeat interval set to:', str(self.hb_interval))
 
-                    if  op == Gateway.HEARTBEAT:
-                        pass
+                        # start heartbeat service
+                        # ensure_future required to protect against while loop from blocking.
+                        asyncio.ensure_future(self.heartbeat_service(hb_interval = self.hb_interval, ws_response = ws))
+                        #await self.heartbeat_service(hb_interval = self.hb_interval, ws_response = ws)
 
-                    if op == Gateway.OP_INVALIDATE_SESSION:
-                        pass
-
-                # Listen for Events
-
-                event = m.get('t')
-
-                if event == 'READY':
-                    self.sequence = res['s']
-                    self.session_id = res['d']['session_id']
                     
-            
-                if event is None:
-                    print('No event!')
-                
-    async def heartbeat(self):
-        pass
+                    if op == Gateway.OP_CODES['HEARTBEAT_ACK']:
+                        # receive only code
+                        # gateway message confirming it received heartbeat
+                        await if_troubleshooting_print('heartbeat ACK received')
+                        self.heartbeat_acked = True
+                        print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
 
-    async def send(self, op: int, d: int or dict, s: int = None, t: str = None):
-        # Payloads: https://discord.com/developers/docs/topics/gateway#payloads
-        #
-        # Gateway Payload Structure
-        #
-        # Field	Type	Description
-        # +----------------------------------------------------------------------+
-        # op	       integer	opcode for the payload
-        # d	?mixed      (any JSON value)	event data
-        # s	?integer *	sequence number, used for resuming sessions and heartbeats
-        # t	?string *   the event name for this payload
-        # * s and t are null when op is not 0 (Gateway Dispatch Opcode).
+                    if  op == Gateway.OP_CODES['HEARTBEAT']:
+                        # SEND OR RECEIVE
+                        # gateway has requested a heartbeat,
+                        # immediately send heartbeat
+                        pass
+
+                    if op == Gateway.OP_CODES['RECONNECT']:
+                        # Receive only code
+                        # You should attempt to reconnect and resume immediately.
+                        pass
+
+                    if op == Gateway.OP_CODES['INVALIDATE_SESSION']:
+                        # Receive only code
+                        # session invalidated
+                        # should reconnect and identify/resume accordingly
+                        pass
+                    if op == Gateway.OP_CODES['GUILD_SYNC']:
+                        # TODO: update send/ receive and ensure in appropriate section
+                        # uncertain send / receive status
+                        pass
+
+                    if op == Gateway.OP_CODES['VOICE_PING']:
+                        # TODO: update send/ receive and ensure in appropriate section
+                        # uncertain send / receive status
+                        pass
+
+                    if op == Gateway.OP_CODES['RESUME']:
+                        # Send only code
+                        # Resume a previous session that was disconnected
+                        pass
+
+                    if op == Gateway.OP_CODES['REQUEST_MEMBERS']:
+                        # Send only code
+                        pass
+
+
+
+                    if op == Gateway.OP_CODES['IDENTIFY']:
+                        # send only code
+                        # Starts a new session during the initial handshake.
+                        pass
+
+                    if op == Gateway.OP_CODES['PRESENCE']:
+                        # Send only code
+                        # Update the client's presence
+                        pass
+
+                    if op == Gateway.OP_CODES['VOICE_STATE']:
+                        # send only code
+                        # Used to join/leave or move between voice channels.
+                        pass
+                
+                # invalid op code:
+                else:
+                    # invalid op code for received message
+                    if troubleshooting_flag == True:
+                        print('invalid op flag:' + str(op))
+                    pass
+
+    async def event_handler(self,event):
+        if event == 'READY':
+            self.sequence = res_payload['s']
+            self.session_id = res_payload['d']['session_id'] 
+        if event is None:
+            print('No event!')
+        pass
     
-        # Example Gateway Dispatch
-            # {
-            #   "op": 0,
-            #   "d": {},
-            #   "s": 42,
-            #   "t": "GATEWAY_EVENT_NAME"
-            # }
+    async def heartbeat_send(self, ws_response):
+        send_opcode = Gateway.OP_CODES['HEARTBEAT']
+
+        last_sequence_received = self.sequence_num
+        
+        await if_troubleshooting_print('sending heartbeat')
+        print('inside_hb_send')
+        if last_sequence_received == None:
+            last_sequence_received = 'null'
+            #from docs:  The inner d key is the last sequence number—s—received by the client. If you have not yet received one, send null. https://discord.com/developers/docs/topics/gateway#heartbeat
+        await self.send(op = send_opcode, d = last_sequence_received, ws_response = ws_response)
+    
+    async def heartbeat_service(self, hb_interval, ws_response):
+
+        #start heartbeat
+        self.heartbeating = True
+        self.heartbeat_acked = False
+
+        # send first heartbeat
+        await self.heartbeat_send(ws_response)
+        print('111')
+        # set heartbeat loop
+
+        # create task while loop
+        # then await the while loop
+        # the time sleep itself should block the while loop but not the whole process
+        
+        while self.heartbeating == True:
+            print('222')
+            await asyncio.sleep(self.hb_interval/1000)
+            print('333')
+            print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
+            # check last heartbeat was acked:
+            if self.heartbeat_acked == True:
+                # send next heartbeat
+                await self.heartbeat_send(ws_response = ws_response)
+            else:
+                await if_troubleshooting_print('no heartbeat ack received, zombied connection')
+                self.heartbeating = False
+
+
+
+        # while self.heartbeating == True:
+        #     print('222')
+        #     #self.hb_interval = 1500
+        #     await asyncio.sleep(self.hb_interval/1000)
+        #     print('333')
+        #     print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
+        #     # check last heartbeat was acked:
+        #     if self.heartbeat_acked == True:
+        #         # send next heartbeat
+        #         await self.heartbeat_send()
+        #     else:
+        #         await if_troubleshooting_print('no heartbeat ack received, zombied connection')
+        #         self.heartbeating = False
+
+        #         # connection has become zombie
+        #         # terminate the connection with a non-1000 close code, reconnect, and attempt to resume. per Heartbeating docs: https://discord.com/developers/docs/topics/gateway#heartbeating
+        #         # terminate:
+        #         # reconnect:
+        #         # resume
+
+        # get last sequence number
+        # veryify ack received status
+        # send heartbeat
+    # async def hb_loop (self, dur):
+    #     await asyncio.sleep(self.hb_interval/1000)
+
+
+    async def send(self, op: int, d: int or dict or str, s: int = None, t: str = None, ws_response = None):
+        # Payloads: https://discord.com/developers/docs/topics/gateway#payloads
+            #
+            # Gateway Payload Structure
+            #
+            # Field	Type	Description
+            # +----------------------------------------------------------------------+
+            # op	       integer	opcode for the payload
+            # d	?mixed      (any JSON value)	event data
+            # s	?integer *	sequence number, used for resuming sessions and heartbeats
+            # t	?string *   the event name for this payload
+            # * s and t are null when op is not 0 (Gateway Dispatch Opcode).
+            # Example Gateway Dispatch
+                # {
+                #   "op": 0,
+                #   "d": {},
+                #   "s": 42,
+                #   "t": "GATEWAY_EVENT_NAME"
+                # }
         payload = {
             "op": op,
             "d": d
@@ -319,17 +484,20 @@ class Gateway:
             payload['s'] = s
         if t:
             payload['t'] = t
+        
+        await if_troubleshooting_print('payload prepared for sending:', str(payload))
+        await ws_response.send_json(data = payload)
 
-    async def depack(self, res):
-        self._buffer.extend(res)
+    async def depack(self, response_data):
+        self._buffer.extend(response_data)
 
-        if len(res) < 4 or res[-4] != self._zlib_suffix:
+        if len(response_data) < 4 or response_data[-4] != self._zlib_suffix:
             return
 
-        dres = self._inflator.decompress(self._buffer)
+        decompressed_response_data = self._inflator.decompress(self._buffer)
         self._buffer = bytearray()
 
-        return dres
+        return decompressed_response_data
 
     def run(self):
         # initializes event loop
@@ -338,29 +506,12 @@ class Gateway:
         finally:
             self.loop.close()
 
+      
 
 if __name__ == '__main__':
     gatewayClient = Gateway(client_auth_token)
     gatewayClient.run()
         
-
-
-
-# on receive hearbeat hello
-
-# start heartbeating
-    # every heatbeat interval
-    # send heartbeat
-    # receive ACK
-    # stay alive
-
-    # on receive hearbeat request
-    # send heartbeat
-
-
-
-
-
 
 ################################
 ####### BOT CODE SECTION #######
@@ -384,7 +535,7 @@ client = discord.Client(intents = intents)
 zonename = 'Australia/Melbourne'
 
 # set this flag to true for bot to be very verbose to assist in dev / troubleshooting.
-troubleshooting_flag = True
+
 
 
 # define a custome event class for the bot to use:
