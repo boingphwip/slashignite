@@ -264,7 +264,7 @@ class Gateway:
                 # get the data from from the reponse
                 res_payload = ws_message.data
 
-                await if_troubleshooting_print(str(type(res_payload)))
+                await if_troubleshooting_print('response received of class:',str(type(res_payload)))
 
                 # if bytes (compressed zlib payload)
                 if type(res_payload) is bytes:
@@ -277,7 +277,7 @@ class Gateway:
                     # use aiohttp as the function receive_json is a coroutine
                     msg = ws_message.json()
 
-                await if_troubleshooting_print(str(msg))
+                await if_troubleshooting_print('reponse payload:',str(msg))
                
                 op = msg['op']
 
@@ -316,9 +316,8 @@ class Gateway:
                     if op == Gateway.OP_CODES['HEARTBEAT_ACK']:
                         # receive only code
                         # gateway message confirming it received heartbeat
-                        await if_troubleshooting_print('heartbeat ACK received')
+                        await if_troubleshooting_print('heartbeat ACK received, setting heartbeat_acked to True')
                         self.heartbeat_acked = True
-                        print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
 
                     if  op == Gateway.OP_CODES['HEARTBEAT']:
                         # SEND OR RECEIVE
@@ -393,68 +392,41 @@ class Gateway:
         last_sequence_received = self.sequence_num
         
         await if_troubleshooting_print('sending heartbeat')
-        print('inside_hb_send')
         if last_sequence_received == None:
             last_sequence_received = 'null'
             #from docs:  The inner d key is the last sequence number—s—received by the client. If you have not yet received one, send null. https://discord.com/developers/docs/topics/gateway#heartbeat
         await self.send(op = send_opcode, d = last_sequence_received, ws_response = ws_response)
+        self.heartbeat_acked = False
+        await if_troubleshooting_print('heartbeat response sent, heartbeat_acked set to False')
     
     async def heartbeat_service(self, hb_interval, ws_response):
 
         #start heartbeat
         self.heartbeating = True
-        self.heartbeat_acked = False
 
         # send first heartbeat
         await self.heartbeat_send(ws_response)
-        print('111')
-        # set heartbeat loop
 
-        # create task while loop
-        # then await the while loop
-        # the time sleep itself should block the while loop but not the whole process
-        
+        # establish heartbeat loop        
         while self.heartbeating == True:
-            print('222')
+            
+            await if_troubleshooting_print('waiting ', str(self.hb_interval/1000), 'seconds for next heartbeat')
             await asyncio.sleep(self.hb_interval/1000)
-            print('333')
-            print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
+
             # check last heartbeat was acked:
             if self.heartbeat_acked == True:
                 # send next heartbeat
+                await if_troubleshooting_print('heartbeat ACK flag is {}, sending next'.format(self.heartbeat_acked))
                 await self.heartbeat_send(ws_response = ws_response)
+            
+            # if last heartbeat was NOT acked, handle zombie connection.
+                # TODO
+                # https://discord.com/developers/docs/topics/gateway#heartbeating-example-gateway-heartbeat-ack
+                # a client does not receive a heartbeat ack between its attempts at sending heartbeats, it should immediately terminate the connection with a non-1000 close code, reconnect, and attempt to resume.
             else:
                 await if_troubleshooting_print('no heartbeat ack received, zombied connection')
                 self.heartbeating = False
-
-
-
-        # while self.heartbeating == True:
-        #     print('222')
-        #     #self.hb_interval = 1500
-        #     await asyncio.sleep(self.hb_interval/1000)
-        #     print('333')
-        #     print("{} {}".format(type(self.heartbeat_acked), self.heartbeat_acked))
-        #     # check last heartbeat was acked:
-        #     if self.heartbeat_acked == True:
-        #         # send next heartbeat
-        #         await self.heartbeat_send()
-        #     else:
-        #         await if_troubleshooting_print('no heartbeat ack received, zombied connection')
-        #         self.heartbeating = False
-
-        #         # connection has become zombie
-        #         # terminate the connection with a non-1000 close code, reconnect, and attempt to resume. per Heartbeating docs: https://discord.com/developers/docs/topics/gateway#heartbeating
-        #         # terminate:
-        #         # reconnect:
-        #         # resume
-
-        # get last sequence number
-        # veryify ack received status
-        # send heartbeat
-    # async def hb_loop (self, dur):
-    #     await asyncio.sleep(self.hb_interval/1000)
-
+                await if_troubleshooting_print("heartbeating status set to {}".format(self.heartbeating))
 
     async def send(self, op: int, d: int or dict or str, s: int = None, t: str = None, ws_response = None):
         # Payloads: https://discord.com/developers/docs/topics/gateway#payloads
@@ -467,6 +439,7 @@ class Gateway:
             # d	?mixed      (any JSON value)	event data
             # s	?integer *	sequence number, used for resuming sessions and heartbeats
             # t	?string *   the event name for this payload
+            #
             # * s and t are null when op is not 0 (Gateway Dispatch Opcode).
             # Example Gateway Dispatch
                 # {
@@ -475,6 +448,7 @@ class Gateway:
                 #   "s": 42,
                 #   "t": "GATEWAY_EVENT_NAME"
                 # }
+        
         payload = {
             "op": op,
             "d": d
