@@ -22,8 +22,8 @@ async def if_troubleshooting_print(*argv):
         print(" ".join(argv))
 
 # load application environment variables
-bot_env = '../ignitebeta_bot.env'
-app_env = '../ignitebeta_app.env'
+bot_env = 'ignitebeta_bot.env'
+app_env = 'ignitebeta_app.env'
 
 # config = {
 #     **dotenv_values(bot_env),  # load bot variables and token
@@ -35,6 +35,7 @@ load_dotenv(app_env)
 # grab auth token
 bot_token_field = 'BOT_TOKEN'
 client_token_field = 'CLIENT_TOKEN'
+
 #########
 # last Token update: 12th Jan
 # dev token last 7 days, requires manual update
@@ -49,7 +50,7 @@ bot_auth_token = os.getenv(bot_token_field)
 ####### SLASH COMMANDS SECTION #######
 ######################################
 
-# need to setup commands as asynchronous commands
+
 #### GLOBAL COMMANDS #### (None at present)
     # testing setup of global slash commands
     #### for now, work with guild commands only as they update instantly. Once done, migrate to global commands
@@ -203,8 +204,107 @@ new_command_json = {
 ####### DISCORD GATEWAY SETUP SECTION #######
 #############################################
 
-# establish gateway class for connecting to discord gateway via websocket
+# setup permission intents and corresponding codes
+# Gateway intents explanation:
+    # documentation: https://discord.com/developers/docs/topics/gateway#gateway-intents
+    # intents is represented by 15 bits.
+    # a 1 represents TRUE intent for the corresponding position
+    # passing intents via an identify requires converting the 15 bits, to an integer)
+    # for example
+        # bits: 000000000000001, corresponding integer = 1, = GUILDS intent only
+        # bits: 100000000000000, corresponding integer = 16384, = DIRECT_MESSAGE_TYPING only
+        # bits: 100000000000001, corresponding integer = 16385, = GUILDS and  DIRECT_MESSAGE_TYPING intents only.
+gateway_intents = {
+    'GUILDS'                    :   1 << 0,
+        # includes:
+            #   - GUILD_CREATE
+            #   - GUILD_UPDATE
+            #   - GUILD_DELETE
+            #   - GUILD_ROLE_CREATE
+            #   - GUILD_ROLE_UPDATE
+            #   - GUILD_ROLE_DELETE
+            #   - CHANNEL_CREATE
+            #   - CHANNEL_UPDATE
+            #   - CHANNEL_DELETE
+            #   - CHANNEL_PINS_UPDATE
+    'GUILD_MEMBERS'             :   1 << 1,
+        # includes:
+            #   - GUILD_MEMBER_ADD
+            #   - GUILD_MEMBER_UPDATE
+            #   - GUILD_MEMBER_REMOVE
+    'GUILD_BANS'                :   1 << 2,
+        # includes:
+            #   - GUILD_BAN_ADD
+            #   - GUILD_BAN_REMOVE
+    'GUILD_EMOJIS'              :   1 << 3,
+        # includes:
+            #   - GUILD_EMOJIS_UPDATE
+    'GUILD_INTEGRATIONS'        :   1 << 4,
+        # includes:
+            #   - GUILD_INTEGRATIONS_UPDATE'
+    'GUILD_WEBHOOKS'            :   1 << 5,
+        # includes:
+            #   - WEBHOOKS_UPDATE
+    'GUILD_INVITES'             :   1 << 6,
+        # includes:
+            #   - INVITE_CREATE
+            #   - INVITE_DELETE
+    'GUILD_VOICE_STATES'        :   1 << 7,
+        # includes:
+            #   - VOICE_STATE_UPDATE
+    'GUILD_PRESENCES'           :   1 << 8,
+        # includes:
+            #   - PRESENCE_UPDATE
+    'GUILD_MESSAGES'            :   1 << 9,
+        # includes:
+            #   - MESSAGE_CREATE
+            #   - MESSAGE_UPDATE
+            #   - MESSAGE_DELETE
+            #   - MESSAGE_DELETE_BULK
+    'GUILD_MESSAGE_REACTIONS'   :   1 << 10,
+        # includes:
+            #   - MESSAGE_REACTION_ADD
+            #   - MESSAGE_REACTION_REMOVE
+            #   - MESSAGE_REACTION_REMOVE_ALL
+            #   - MESSAGE_REACTION_REMOVE_EMOJI
+    'GUILD_MESSAGE_TYPING'      :   1 << 11,
+        # includes:
+            #   - TYPING_START
+    'DIRECT_MESSAGES'           :   1 << 12,
+        # includes:
+            #   - MESSAGE_CREATE
+            #   - MESSAGE_UPDATE
+            #   - MESSAGE_DELETE
+            #   - CHANNEL_PINS_UPDATE
+    'DIRECT_MESSAGE_REACTIONS'  :   1 << 13,
+        # includes:
+            #   - MESSAGE_REACTION_ADD
+            #   - MESSAGE_REACTION_REMOVE
+            #   - MESSAGE_REACTION_REMOVE_ALL
+            #   - MESSAGE_REACTION_REMOVE_EMOJI
+    'DIRECT_MESSAGE_TYPING'     :   1 << 14
+        # includes:
+            #   - TYPING_START
+    }
 
+# select desired intents
+desired_intents = [
+    'GUILDS',
+    'GUILD_MEMBERS',
+    'GUILD_INVITES',
+    'GUILD_PRESENCES',
+    'GUILD_MESSAGES',
+    'GUILD_MESSAGE_REACTIONS',
+    'DIRECT_MESSAGES',
+    'DIRECT_MESSAGE_REACTIONS'
+    ]
+
+# generate integer code that represents selected intents
+intents_int_code = sum(gateway_intents[intent] for intent in desired_intents)
+
+
+
+# establish gateway class for connecting to discord gateway via websocket
 class Gateway:
     # set gateway, choosing to communicate over JSON, and version 6
     DISCORD_GATEWAY = 'wss://gateway.discord.gg/?v=6&encoding=json'
@@ -256,12 +356,10 @@ class Gateway:
         self._inflator = zlib.decompressobj()
         
     async def main(self):
-        async with self.sesh.ws_connect(Gateway.DISCORD_GATEWAY) as ws:
-
-            # I think this is a class aiohttp.WsMessage
-            async for ws_message in ws:
+        async with self.sesh.ws_connect(Gateway.DISCORD_GATEWAY) as ws:     # I think ws is class aiohttp.WebSocketResponse https://docs.aiohttp.org/en/stable/client_reference.html#aiohttp.ClientWebSocketResponse 
+            async for ws_message in ws:                                     # I think ws_message is class aiohttp.WsMessage https://docs.aiohttp.org/en/stable/websocket_utilities.html#aiohttp.WSMessage
                 
-                # get the data from from the reponse
+                # extract the data from from the message
                 res_payload = ws_message.data
 
                 await if_troubleshooting_print('response received of class:',str(type(res_payload)))
@@ -274,33 +372,35 @@ class Gateway:
                 # if str (json)
                 if type(res_payload) is str:
                     #load json to dict
-                    # use aiohttp as the function receive_json is a coroutine
                     msg = ws_message.json()
 
                 await if_troubleshooting_print('reponse payload:',str(msg))
-               
-                op = msg['op']
 
+                # extract OP_CODE
+                op = msg['op']
                 ### handle the different gateway op codes:
                 # handle gateway op for discord guild event
                 if op == 0:
 
+                    await if_troubleshooting_print('EVENT op_code received. Event type:',msg['t'])
+    
+                    # pass to event handler function
                     event_name = msg.get('t')
                     event_hander(event=event_name)
                     pass
                 
                 # handle other RECEIVED gateway websocket operations (setup, identify, resume, heartbeats etc)
                 elif op in Gateway.OP_CODES_by_action['receive']:
-                    #initial connection establishment:
-                        # the initial flow on establishing a connections per the docs: https://discord.com/developers/docs/topics/gateway#connecting-to-the-gateway
-                            # receive OPcode = 10 Hello
-                            # extract heartbeat_interval from opcode10 hello msg
-                            # commence sending opcode1 heartbeats every heartbeat_interval milliseconds
-                                # NB: gateway may also request heartbeat, if received should send a heartbeat on request as well.
-                            # client should send opcode 2 Identify
-
                     if op == Gateway.OP_CODES['HELLO']:
                         # receive only code
+                        #initial connection establishment:
+                            # the initial flow on establishing a connections per the docs: https://discord.com/developers/docs/topics/gateway#connecting-to-the-gateway
+                                # receive OPcode = 10 Hello
+                                # extract heartbeat_interval from opcode10 hello msg
+                                # commence sending opcode1 heartbeats every heartbeat_interval milliseconds
+                                    # NB: gateway may also request heartbeat, if received should send a heartbeat on request as well.
+                                # client should send opcode 2 Identify
+
                         await if_troubleshooting_print('HELLO received')
                         
                         self.hb_interval = msg['d']['heartbeat_interval']
@@ -309,8 +409,11 @@ class Gateway:
 
                         # start heartbeat service
                         # ensure_future required to protect against while loop from blocking.
-                        asyncio.ensure_future(self.heartbeat_service(hb_interval = self.hb_interval, ws_response = ws))
-                        #await self.heartbeat_service(hb_interval = self.hb_interval, ws_response = ws)
+                        asyncio.create_task(self.heartbeat_service(hb_interval = self.hb_interval, ws_response = ws))
+
+                        # next we need to send identify:
+                        await if_troubleshooting_print('calling identify_send')
+                        await self.identify_send(token = client_auth_token, intents = intents_int_code, ws_response = ws)
 
                     
                     if op == Gateway.OP_CODES['HEARTBEAT_ACK']:
@@ -323,26 +426,31 @@ class Gateway:
                         # SEND OR RECEIVE
                         # gateway has requested a heartbeat,
                         # immediately send heartbeat
+                        await if_troubleshooting_print('HEARTBEAT op code received')
                         pass
 
                     if op == Gateway.OP_CODES['RECONNECT']:
                         # Receive only code
                         # You should attempt to reconnect and resume immediately.
+                        await if_troubleshooting_print('RECONNECT op code received')
                         pass
 
                     if op == Gateway.OP_CODES['INVALIDATE_SESSION']:
                         # Receive only code
                         # session invalidated
                         # should reconnect and identify/resume accordingly
+                        await if_troubleshooting_print('INVALIDATE_SESSION op code received')
                         pass
                     if op == Gateway.OP_CODES['GUILD_SYNC']:
                         # TODO: update send/ receive and ensure in appropriate section
                         # uncertain send / receive status
+                        await if_troubleshooting_print('GUILD_SYNC op code received')
                         pass
 
                     if op == Gateway.OP_CODES['VOICE_PING']:
                         # TODO: update send/ receive and ensure in appropriate section
                         # uncertain send / receive status
+                        await if_troubleshooting_print('VOICE_PING op code received')
                         pass
 
                     if op == Gateway.OP_CODES['RESUME']:
@@ -427,6 +535,23 @@ class Gateway:
                 await if_troubleshooting_print('no heartbeat ack received, zombied connection')
                 self.heartbeating = False
                 await if_troubleshooting_print("heartbeating status set to {}".format(self.heartbeating))
+
+    async def identify_send(self, token, intents, ws_response, properties = {'$os':'windows', '$browser':'slashignite','$device':'slashignite'},  compress = False, large_threshold = 50, shard = [0,1], presence = None, guild_subscriptions = True):
+        # identify docs: https://discord.com/developers/docs/topics/gateway#identify
+        
+        op_code = 2
+        #prepare data portion
+        identify_payload = {
+            'token'                 :   token,
+            'properties'            :   properties,
+            'compress'              :   compress,
+            'large_threshold'       :   large_threshold,
+            'shard'                 :   shard,        # field is optional, not implemented / required at present
+            #'presence'              :   presence,     # field is optional, for initial presence setting
+            'guild_subscriptions'   :   guild_subscriptions,
+            'intents'               :   intents
+        }
+        await self.send(op = op_code, d = identify_payload, ws_response = ws_response)
 
     async def send(self, op: int, d: int or dict or str, s: int = None, t: str = None, ws_response = None):
         # Payloads: https://discord.com/developers/docs/topics/gateway#payloads
